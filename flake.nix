@@ -1,5 +1,5 @@
 {
-  description = "ListenBrainz CLI music player (Python script environment)";
+  description = "ListenBrainz CLI/TUI music player";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,34 +13,67 @@
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
+      python = pkgs.python3;
 
-      # Python environment with all required packages
-      pythonEnv = pkgs.python3.withPackages (ps:
+      pythonEnv = python.withPackages (ps:
         with ps; [
           requests
           yt-dlp
-          troi
           prompt-toolkit
-          python-mpv-jsonipc
+          troi
         ]);
+
+      lb-cli = python.pkgs.buildPythonPackage {
+        pname = "lb-cli";
+        version = "0.1.0";
+        src = ./.;
+        propagatedBuildInputs = with python.pkgs; [
+          requests
+          yt-dlp
+          prompt-toolkit
+        ];
+        meta = {
+          description = "ListenBrainz CLI/TUI music player";
+          license = pkgs.lib.licenses.mit;
+          mainProgram = "lb";
+        };
+      };
     in {
+      packages.default = lb-cli;
+
       devShells.default = pkgs.mkShell {
         buildInputs = [
           pythonEnv
-          pkgs.mpv # for audio playback
-          pkgs.yt-dlp # CLI tool (may be needed by mpv's ytdl hook)
-          pkgs.jq # optional, for JSON processing
-          pkgs.curl # optional, for manual API tests
+          pkgs.mpv
+          pkgs.yt-dlp
         ];
 
         shellHook = ''
-          echo "🎵 ListenBrainz Python CLI Environment"
-          echo "Your script is ready to run:"
-          echo "  python lb.py play \"Artist Title\""
-          echo "  python lb.py weekly <username>"
+          # Load environment variables from .env if it exists
+          if [ -f .env ]; then
+            export $(grep -v '^#' .env | xargs)
+            echo "✅ Loaded credentials from .env"
+          else
+            echo "⚠️  .env file not found. Create one from .env.template"
+          fi
+
+          # Add the current directory to PYTHONPATH so Python can find lb_cli
+          export PYTHONPATH="$PWD:$PYTHONPATH"
+
+          # Create convenient aliases
+          alias lb='python -m lb_cli'
+          alias lb-tui='python -m lb_cli.tui'
+
+          echo "🎵 ListenBrainz CLI Music Environment"
           echo ""
-          # Optional: set token as env var if you want to override the hardcoded one
-          # export LISTENBRAINZ_TOKEN="your-token-here"
+          echo "✅ Ready! Available commands:"
+          echo "  lb play \"Artist Title\""
+          echo "  lb liked"
+          echo "  lb weekly"
+          echo "  lb-tui liked"
+          echo "  lb-tui weekly"
+          echo "  lb-tui playlist <mbid>"
+          echo ""
         '';
       };
     });

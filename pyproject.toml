@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lb-cli"
+version = "0.1.0"
+description = "CLI/TUI music player with ListenBrainz integration"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "mobsenpai"}
+]
+dependencies = [
+    "requests",
+    "yt-dlp",
+    "prompt-toolkit",
+]
+requires-python = ">=3.9"
+
+[project.scripts]
+lb = "lb_cli.cli:main"
+lb-tui = "lb_cli.tui:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lb_cli*"]

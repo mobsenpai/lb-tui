@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-ListenBrainz TUI Music Player (no mpv module required)
+ListenBrainz TUI Music Player
+Browse and play liked songs, weekly jams, or any playlist.
 """
 
-import json
 import os
 import sys
 import subprocess
 import threading
 import time
 import random
-import tempfile
 import signal
 
 from prompt_toolkit import Application
@@ -19,106 +18,10 @@ from prompt_toolkit.layout import Layout, HSplit, VSplit
 from prompt_toolkit.widgets import TextArea, Label, Frame
 from prompt_toolkit.styles import Style
 
-import yt_dlp
-import requests
+from .api import get_playlist_tracks, get_liked_tracks, get_weekly_tracks
+from .player import search_url
 
-# ----------------------------------------------------------------------
-# CONFIG
-# ----------------------------------------------------------------------
-LISTENBRAINZ_TOKEN = "ccf7c17f-8fdd-4190-a502-c929137440cb"
-LISTENBRAINZ_API_URL = "https://api.listenbrainz.org/1"
-USER_AGENT = "LB-CLI-Player/2.0"
-CACHE_FILE = os.path.expanduser("~/.cache/lb_mbid_cache.json")
 
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_cache(cache):
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-    with open(CACHE_FILE, 'w') as f:
-        json.dump(cache, f)
-
-# ----------------------------------------------------------------------
-# API Helpers
-# ----------------------------------------------------------------------
-def get_playlist_tracks(playlist_mbid):
-    if playlist_mbid.startswith("http"):
-        playlist_mbid = playlist_mbid.split("/")[-1]
-    url = f"{LISTENBRAINZ_API_URL}/playlist/{playlist_mbid}"
-    headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        return []
-    data = resp.json()
-    tracks = []
-    for item in data.get('playlist', {}).get('track', []):
-        title = item.get('title', 'Unknown Title')
-        artist = item.get('creator', 'Unknown Artist')
-        tracks.append(f"{artist} - {title}")
-    return tracks
-
-def get_liked_tracks(username, count=500):
-    url = f"{LISTENBRAINZ_API_URL}/feedback/user/{username}/get-feedback"
-    headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"}
-    params = {"score": 1, "count": count}
-    resp = requests.get(url, headers=headers, params=params)
-    if resp.status_code != 200:
-        return []
-    data = resp.json()
-    feedback_items = data.get('feedback', [])
-    cache = load_cache()
-    tracks = []
-    uncached = []
-    for item in feedback_items:
-        mbid = item.get('recording_mbid')
-        if not mbid:
-            continue
-        if mbid in cache:
-            tracks.append(cache[mbid])
-        else:
-            uncached.append(mbid)
-    if uncached:
-        for mbid in uncached:
-            mb_url = f"https://musicbrainz.org/ws/2/recording/{mbid}"
-            mb_headers = {"User-Agent": USER_AGENT}
-            mb_params = {"fmt": "json", "inc": "artist-credits"}
-            try:
-                mb_resp = requests.get(mb_url, headers=mb_headers, params=mb_params)
-                if mb_resp.status_code == 200:
-                    mb_data = mb_resp.json()
-                    title = mb_data.get('title')
-                    artist_credit = mb_data.get('artist-credit', [])
-                    artist = artist_credit[0].get('name') if artist_credit else None
-                    if artist and title:
-                        track_str = f"{artist} - {title}"
-                        tracks.append(track_str)
-                        cache[mbid] = track_str
-                time.sleep(1.1)
-            except:
-                continue
-        save_cache(cache)
-    seen = set()
-    ordered = []
-    for item in feedback_items:
-        mbid = item.get('recording_mbid')
-        if mbid and mbid in cache:
-            track = cache[mbid]
-            if track not in seen:
-                seen.add(track)
-                ordered.append(track)
-    return ordered
-
-def get_weekly_tracks(username):
-    if username == "mobsenpai":
-        return get_playlist_tracks("2b85e1a1-3f4f-4eb2-8abb-bbae2a01fcf6")
-    return []
-
-# ----------------------------------------------------------------------
-# TUI using subprocess mpv
-# ----------------------------------------------------------------------
 class MusicTUI:
     def __init__(self, tracks, title="Playlist"):
         self.all_tracks = tracks
@@ -129,11 +32,9 @@ class MusicTUI:
         self.url_cache = {}
         self.mpv_process = None
         self.is_playing = False
-        self.current_track_url = None
 
         self.status_text = "Ready"
         self.now_playing = "Nothing playing"
-        self.volume = 100
         self.selected_index = 0
 
         self._build_ui()
@@ -239,7 +140,6 @@ class MusicTUI:
 
     def _toggle_pause(self):
         if self.mpv_process and self.mpv_process.poll() is None:
-            # Send SIGSTOP to pause, SIGCONT to resume (Unix only)
             if self.is_playing:
                 self.mpv_process.send_signal(signal.SIGSTOP)
                 self.is_playing = False
@@ -266,19 +166,10 @@ class MusicTUI:
     def _search_url(self, track):
         if track in self.url_cache:
             return self.url_cache[track]
-        clean = track.split(' - Topic')[0]
-        query = f"ytsearch1:{clean} Official Audio"
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-            try:
-                info = ydl.extract_info(query, download=False)
-                entries = info.get('entries', [])
-                if entries:
-                    url = entries[0]['webpage_url']
-                    self.url_cache[track] = url
-                    return url
-            except Exception:
-                pass
-        return None
+        url = search_url(track)  # from player module
+        if url:
+            self.url_cache[track] = url
+        return url
 
     def _play_url(self, url):
         self._stop_playback()
@@ -301,7 +192,6 @@ class MusicTUI:
                 self.now_playing = track
                 self._play_url(url)
                 self.status_text = "Playing"
-                # Start a monitor thread for when playback ends
                 threading.Thread(target=self._monitor_playback, daemon=True).start()
             else:
                 self.status_text = f"Not found: {track}"
@@ -314,7 +204,6 @@ class MusicTUI:
             self.is_playing = False
             self.status_text = "Stopped"
             self._update_ui()
-            # Auto-advance to next track
             self.next_track()
 
     def next_track(self):
@@ -336,26 +225,23 @@ class MusicTUI:
         )
         self.app.run()
 
-# ----------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: lb_tui.py liked [username]")
-        print("       lb_tui.py weekly [username]")
-        print("       lb_tui.py playlist <mbid_or_url>")
+        print("Usage: lb-tui liked")
+        print("       lb-tui weekly")
+        print("       lb-tui playlist <mbid_or_url>")
         sys.exit(1)
 
     cmd = sys.argv[1]
-    username = sys.argv[2] if len(sys.argv) > 2 else "mobsenpai"
 
     print("Loading tracks...")
     if cmd == "liked":
-        tracks = get_liked_tracks(username)
-        title = f"Liked Songs ({username})"
+        tracks = get_liked_tracks()
+        title = "Liked Songs"
     elif cmd == "weekly":
-        tracks = get_weekly_tracks(username)
-        title = f"Weekly Jams ({username})"
+        tracks = get_weekly_tracks()
+        title = "Weekly Jams"
     elif cmd == "playlist":
         if len(sys.argv) < 3:
             print("Playlist MBID required")
@@ -373,6 +259,7 @@ def main():
     print(f"Loaded {len(tracks)} tracks. Launching TUI...")
     tui = MusicTUI(tracks, title)
     tui.run()
+
 
 if __name__ == "__main__":
     main()
