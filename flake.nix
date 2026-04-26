@@ -27,6 +27,7 @@
         propagatedBuildInputs = [requests prompt-toolkit];
 
         doCheck = false;
+        pythonRuntimeDepsCheck = false;
 
         postInstall = ''
           wrapProgram $out/bin/lb \
