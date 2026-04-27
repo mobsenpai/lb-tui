@@ -239,8 +239,10 @@ class MusicTUI:
     def _cleanup_and_exit(self, signum=None, frame=None):
         """Kill mpv and exit cleanly on terminal close."""
         self._stop_playback()
-        os._exit(0)          
-
+        if self.app:
+            self.app.exit()
+        else:
+            os._exit(0)
     # ------------------------------------------------------------------
     #  Typing mode
     # ------------------------------------------------------------------
@@ -516,13 +518,24 @@ class MusicTUI:
     #  Playback controls
     # ------------------------------------------------------------------
     def _stop_playback(self):
-        if self.mpv_process:
-            self.mpv_process.terminate()
-            self.mpv_process = None
+        if self.mpv_process and self.mpv_process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.mpv_process.pid), signal.SIGTERM)
+                try:
+                    self.mpv_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(self.mpv_process.pid), signal.SIGKILL)
+                    self.mpv_process.wait()
+            except ProcessLookupError:
+                pass
+        self.mpv_process = None
         self.is_playing = False
         socket_path = "/tmp/lb-mpv-socket"
         if os.path.exists(socket_path):
-            os.remove(socket_path)
+            try:
+                os.remove(socket_path)
+            except OSError:
+                pass
 
     def _play_url(self, url, title=None):
         self._stop_playback()
