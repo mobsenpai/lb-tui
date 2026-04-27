@@ -56,6 +56,9 @@ class MusicTUI:
         self._build_ui()
         self._setup_keybindings()
 
+        signal.signal(signal.SIGHUP, self._cleanup_and_exit)
+        signal.signal(signal.SIGTERM, self._cleanup_and_exit)
+
     # ------------------------------------------------------------------
     #  UI Construction
     # ------------------------------------------------------------------
@@ -232,6 +235,11 @@ class MusicTUI:
                 self.app.loop.call_soon_threadsafe(self._update_ui)
         else:
             self._update_ui()
+
+    def _cleanup_and_exit(self, signum=None, frame=None):
+        """Kill mpv and exit cleanly on terminal close."""
+        self._stop_playback()
+        os._exit(0)          
 
     # ------------------------------------------------------------------
     #  Typing mode
