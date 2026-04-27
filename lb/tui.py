@@ -4,7 +4,7 @@ ListenBrainz TUI Music Player
 Vim keys, tabs with borders, persistent playback, in‑playlist filter, search results.
 """
 
-import os, sys, subprocess, threading, random, signal, time
+import os, sys, subprocess, threading, random, signal, time, json, socket
 
 from prompt_toolkit import Application
 from prompt_toolkit.key_binding import KeyBindings
@@ -511,13 +511,22 @@ class MusicTUI:
         if self.mpv_process:
             self.mpv_process.terminate()
             self.mpv_process = None
-            self.is_playing = False
+        self.is_playing = False
+        socket_path = "/tmp/lb-mpv-socket"
+        if os.path.exists(socket_path):
+            os.remove(socket_path)
 
-    def _play_url(self, url):
+    def _play_url(self, url, title=None):
         self._stop_playback()
+        cmd = ["mpv", "--no-video", "--input-ipc-server=/tmp/lb-mpv-socket"]
+        if title:
+            cmd.append(f"--force-media-title={title}")
+        cmd.append(url)
         self.mpv_process = subprocess.Popen(
-            ["mpv", "--no-video", url],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid,
         )
         self.is_playing = True
@@ -540,7 +549,7 @@ class MusicTUI:
         if url:
             self.url_cache[track] = url
             self.now_playing = track
-            self._play_url(url)
+            self._play_url(url, title=track)
             self.status_text = "Playing"
 
             if " - " in track:
@@ -613,16 +622,19 @@ class MusicTUI:
             self.play_index(prv)
 
     def toggle_pause(self):
-        if self.mpv_process and self.mpv_process.poll() is None:
-            if self.is_playing:
-                self.mpv_process.send_signal(signal.SIGSTOP)
-                self.is_playing = False
-                self.status_text = "Paused"
-            else:
-                self.mpv_process.send_signal(signal.SIGCONT)
-                self.is_playing = True
-                self.status_text = "Playing"
-            self._safe_update_ui()
+        if not self.mpv_process or self.mpv_process.poll() is not None:
+            return
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect("/tmp/lb-mpv-socket")                         
+            s.sendall(json.dumps({"command": ["cycle", "pause"]}).encode() + b"\n")
+            s.close()
+        except Exception:
+            return                                                 
+    
+        self.is_playing = not self.is_playing
+        self.status_text = "Paused" if not self.is_playing else "Playing"
+        self._safe_update_ui()
 
     def toggle_shuffle(self):
         self.shuffle_mode = not self.shuffle_mode
