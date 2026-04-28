@@ -88,6 +88,18 @@ def _get_credentials():
     print("\n⚠️  No credentials provided. Scrobbling and liked tracks will not work.\n")
     return token or "", username or ""
 
+# --- Internet connectivity check ---
+import socket
+def check_internet(timeout: float = 2.0) -> bool:
+    """Return True if we can reach the internet (uses ListenBrainz API host)."""
+    try:
+        host = "api.listenbrainz.org"
+        port = 443
+        socket.setdefaulttimeout(timeout)
+        socket.getaddrinfo(host, port)
+        return True
+    except socket.gaierror:
+        return False
 
 # Populate the module-level globals that the rest of the app uses
 LISTENBRAINZ_TOKEN, DEFAULT_USERNAME = _get_credentials()

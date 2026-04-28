@@ -824,19 +824,24 @@ class MusicTUI:
                 'input-field': 'bg:#222222 #ffffff',
             }),
         )
-
+    
         def on_resize(signum, frame):
             if self.app:
                 self.app.invalidate()
-
+    
         try:
             signal.signal(signal.SIGWINCH, on_resize)
         except:
             pass
-
-        self._activate_tab(0)
+    
+        # Check internet connectivity before loading liked tracks
+        from .config import check_internet
+        if not check_internet():
+            self.status_text = "⚠️ No internet connection"
+            self.now_playing = "Offline"
+        else:
+            self._activate_tab(0)
         self.app.run()
-
 
 def main():
     print("Starting ListenBrainz TUI...")

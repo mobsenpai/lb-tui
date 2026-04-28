@@ -1,8 +1,35 @@
 import time
 import requests
-from .config import LISTENBRAINZ_TOKEN, LISTENBRAINZ_API_URL, USER_AGENT, WEEKLY_JAMS_MBID, DEFAULT_USERNAME
+from .config import (
+    LISTENBRAINZ_TOKEN, LISTENBRAINZ_API_URL, USER_AGENT,
+    WEEKLY_JAMS_MBID, DEFAULT_USERNAME, check_internet,
+)
 from .cache import load_cache, save_cache
 
+# --------------------------------------------------------------------------- #
+#  Helpers
+# --------------------------------------------------------------------------- #
+def _api_get(url, headers=None, params=None):
+    """GET request with connectivity check and error reporting."""
+    if not check_internet():
+        raise ConnectionError("No internet connection")
+    resp = requests.get(url, headers=headers, params=params)
+    if resp.status_code != 200:
+        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
+    return resp.json()
+
+def _api_post(url, json=None, headers=None):
+    """POST request with connectivity check and error reporting."""
+    if not check_internet():
+        raise ConnectionError("No internet connection")
+    resp = requests.post(url, json=json, headers=headers)
+    if resp.status_code != 200:
+        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
+    return resp.json()
+
+# --------------------------------------------------------------------------- #
+#  Public API
+# --------------------------------------------------------------------------- #
 def submit_listen(artist_name, track_name, listened_at=None):
     """Submit a single listen to ListenBrainz."""
     if not LISTENBRAINZ_TOKEN:
@@ -21,14 +48,14 @@ def submit_listen(artist_name, track_name, listened_at=None):
         }]
     }
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}", "User-Agent": USER_AGENT}
-    resp = requests.post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
-    if resp.status_code == 200:
+    try:
+        _api_post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
         print(f"✅ Scrobbled: {artist_name} - {track_name}")
-    else:
-        print(f"❌ Scrobble failed: {resp.text}")
+    except ConnectionError as e:
+        print(f"❌ Scrobble failed: {e}")
 
 def submit_now_playing(artist_name, track_name):
-    """Submit a 'now playing' notification. Use clear_now_playing() to remove status."""
+    """Submit a 'now playing' notification."""
     if not LISTENBRAINZ_TOKEN:
         return
     payload = {
@@ -41,23 +68,21 @@ def submit_now_playing(artist_name, track_name):
         }]
     }
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}", "User-Agent": USER_AGENT}
-    resp = requests.post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
-    if resp.status_code != 200:
-        print(f"❌ Now playing update failed: {resp.text}")
+    try:
+        _api_post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
+    except ConnectionError as e:
+        print(f"❌ Now playing update failed: {e}")
 
 def clear_now_playing():
     """Remove the now‑playing status from ListenBrainz."""
     if not LISTENBRAINZ_TOKEN:
         return
-    # Send a playing_now with no track_metadata – this clears the status
-    payload = {
-        "listen_type": "playing_now",
-        "payload": [{}]
-    }
+    payload = {"listen_type": "playing_now", "payload": [{}]}
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}", "User-Agent": USER_AGENT}
-    resp = requests.post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
-    if resp.status_code != 200:
-        print(f"❌ Clear now playing failed: {resp.text}")
+    try:
+        _api_post(f"{LISTENBRAINZ_API_URL}/submit-listens", json=payload, headers=headers)
+    except ConnectionError as e:
+        print(f"❌ Clear now playing failed: {e}")
 
 def get_playlist_tracks(playlist_mbid):
     """Fetch tracks from a ListenBrainz playlist by its MBID (UUID) or full URL."""
@@ -65,10 +90,11 @@ def get_playlist_tracks(playlist_mbid):
         playlist_mbid = playlist_mbid.split("/")[-1]
     url = f"{LISTENBRAINZ_API_URL}/playlist/{playlist_mbid}"
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
+    try:
+        data = _api_get(url, headers=headers)
+    except ConnectionError as e:
+        print(f"❌ Failed to fetch playlist: {e}")
         return []
-    data = resp.json()
     tracks = []
     for item in data.get('playlist', {}).get('track', []):
         title = item.get('title', 'Unknown Title')
@@ -77,22 +103,20 @@ def get_playlist_tracks(playlist_mbid):
     return tracks
 
 def get_liked_tracks():
-    """Fetch liked tracks for the default user. Raises on API errors."""
+    """Fetch liked tracks for the default user."""
     if not DEFAULT_USERNAME:
         raise ValueError("LB_USERNAME not set")
-    username = DEFAULT_USERNAME
-    url = f"{LISTENBRAINZ_API_URL}/feedback/user/{username}/get-feedback"
+    url = f"{LISTENBRAINZ_API_URL}/feedback/user/{DEFAULT_USERNAME}/get-feedback"
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
     params = {"score": 1, "count": 500}
-    resp = requests.get(url, headers=headers, params=params)
-    if resp.status_code != 200:
-        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
-    data = resp.json()
+    try:
+        data = _api_get(url, headers=headers, params=params)
+    except ConnectionError as e:
+        raise ConnectionError(f"Failed to fetch liked tracks: {e}")
     feedback_items = data.get('feedback', [])
     cache = load_cache()
     tracks = []
     uncached = []
-
     for item in feedback_items:
         mbid = item.get('recording_mbid')
         if not mbid:
@@ -101,7 +125,6 @@ def get_liked_tracks():
             tracks.append(cache[mbid])
         else:
             uncached.append(mbid)
-
     if uncached:
         print(f"🔄 Resolving {len(uncached)} new MBIDs (one-time delay)...")
         for mbid in uncached:
@@ -120,11 +143,9 @@ def get_liked_tracks():
                         tracks.append(track_str)
                         cache[mbid] = track_str
                 time.sleep(1.1)
-            except:
+            except Exception:
                 continue
         save_cache(cache)
-
-    # Deduplicate and maintain order
     seen = set()
     ordered = []
     for item in feedback_items:
@@ -140,15 +161,13 @@ def get_weekly_tracks():
     """Return tracks for the user's Weekly Jams playlist (auto‑generated)."""
     if not DEFAULT_USERNAME:
         raise ValueError("LB_USERNAME not set")
-    username = DEFAULT_USERNAME
-    url = f"{LISTENBRAINZ_API_URL}/user/{username}/playlists/createdfor"
+    url = f"{LISTENBRAINZ_API_URL}/user/{DEFAULT_USERNAME}/playlists/createdfor"
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
-    data = resp.json()
+    try:
+        data = _api_get(url, headers=headers)
+    except ConnectionError as e:
+        raise ConnectionError(f"Failed to fetch weekly jams: {e}")
     playlists = data.get("playlists", [])
-    # Find the first playlist whose title starts with "Weekly Jams for "
     for item in playlists:
         p = item.get("playlist", {})
         title = p.get("title", "")
@@ -157,44 +176,19 @@ def get_weekly_tracks():
             if identifier.startswith("http"):
                 identifier = identifier.split("/")[-1]
             return get_playlist_tracks(identifier)
-    # Fallback: try the hardcoded MBID (specific to mobsenpai)
+    # Fallback: hardcoded MBID
     return get_playlist_tracks(WEEKLY_JAMS_MBID)
-
-def get_user_playlists():
-    """Return list of (title, identifier) for the user's playlists."""
-    if not DEFAULT_USERNAME:
-        raise ValueError("LB_USERNAME not set")
-    url = f"{LISTENBRAINZ_API_URL}/user/{DEFAULT_USERNAME}/playlists"
-    headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
-    params = {"count": 100}   # adjust if you have more
-    resp = requests.get(url, headers=headers, params=params)
-    if resp.status_code != 200:
-        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
-    data = resp.json()
-    playlists = []
-    for item in data.get('playlists', []):
-        p = item.get('playlist', {})
-        title = p.get('title', 'Untitled')
-        mbid = p.get('identifier', '')   # full URL
-        if not mbid:
-            continue
-        # extract UUID from URL if needed
-        if mbid.startswith("http"):
-            mbid = mbid.split("/")[-1]
-        playlists.append((title, mbid))
-    return playlists
 
 def get_weekly_exploration_tracks():
     """Return tracks for the user's Weekly Exploration playlist (auto‑generated)."""
     if not DEFAULT_USERNAME:
         raise ValueError("LB_USERNAME not set")
-    username = DEFAULT_USERNAME
-    url = f"{LISTENBRAINZ_API_URL}/user/{username}/playlists/createdfor"
+    url = f"{LISTENBRAINZ_API_URL}/user/{DEFAULT_USERNAME}/playlists/createdfor"
     headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        raise ConnectionError(f"API error {resp.status_code}: {resp.text}")
-    data = resp.json()
+    try:
+        data = _api_get(url, headers=headers)
+    except ConnectionError as e:
+        raise ConnectionError(f"Failed to fetch weekly exploration: {e}")
     playlists = data.get("playlists", [])
     for item in playlists:
         p = item.get("playlist", {})
@@ -205,3 +199,26 @@ def get_weekly_exploration_tracks():
                 identifier = identifier.split("/")[-1]
             return get_playlist_tracks(identifier)
     return []
+
+def get_user_playlists():
+    """Return list of (title, identifier) for the user's playlists."""
+    if not DEFAULT_USERNAME:
+        raise ValueError("LB_USERNAME not set")
+    url = f"{LISTENBRAINZ_API_URL}/user/{DEFAULT_USERNAME}/playlists"
+    headers = {"Authorization": f"Token {LISTENBRAINZ_TOKEN}"} if LISTENBRAINZ_TOKEN else {}
+    params = {"count": 100}
+    try:
+        data = _api_get(url, headers=headers, params=params)
+    except ConnectionError as e:
+        raise ConnectionError(f"Failed to fetch playlists: {e}")
+    playlists = []
+    for item in data.get('playlists', []):
+        p = item.get('playlist', {})
+        title = p.get('title', 'Untitled')
+        mbid = p.get('identifier', '')
+        if not mbid:
+            continue
+        if mbid.startswith("http"):
+            mbid = mbid.split("/")[-1]
+        playlists.append((title, mbid))
+    return playlists
